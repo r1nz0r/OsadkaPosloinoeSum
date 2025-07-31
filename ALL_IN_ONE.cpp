@@ -340,3 +340,53 @@ int main() {
   ]
 }
 
+#include <iostream>
+#include <string>
+#include <limits>
+
+// ... (здесь идет остальной код: структуры, класс SettlementCalculator, функция loadInputFromJSON)
+
+// Функция для запроса пути к файлу у пользователя
+std::string get_input_file_path() {
+    std::string path;
+    std::cout << "Введите путь к файлу input.json и нажмите Enter." << std::endl;
+    std::cout << "(Если файл в той же папке, что и программа, просто нажмите Enter): ";
+    std::getline(std::cin, path);
+
+    // Если пользователь ничего не ввел, используем имя файла по умолчанию
+    if (path.empty()) {
+        return "input.json";
+    }
+    
+    // Простая проверка, чтобы убрать случайные кавычки, если пользователь скопировал путь
+    if (path.front() == '"' && path.back() == '"') {
+        path = path.substr(1, path.length() - 2);
+    }
+    
+    return path;
+}
+
+// ... (далее идет функция main)
+
+
+int main() {
+    setlocale(LC_ALL, "Russian");
+    try {
+        // 1. Получаем путь к файлу от пользователя
+        std::string config_path = get_input_file_path();
+
+        // 2. Используем полученный путь для загрузки данных
+        InputData input = loadInputFromJSON(config_path);
+        
+        SettlementCalculator calculator(input);
+        calculator.run();
+
+    } catch (const std::exception& e) {
+        std::cerr << "\nКритическая ошибка: " << e.what() << std::endl;
+        // Добавим паузу, чтобы пользователь успел прочитать ошибку перед закрытием окна
+        std::cout << "Нажмите Enter для выхода...";
+        std::cin.get();
+        return 1;
+    }
+    return 0;
+}
