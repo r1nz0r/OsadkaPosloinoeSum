@@ -1,129 +1,376 @@
-#include "GEO.h"
+#include <iostream>
+#include <vector>
+#include <string>
+#include <fstream>
+#include <cmath>
+#include <stdexcept>
+#include <iomanip>
+#include <numeric>
 
-double CalculationLayer::s_depthSummary = 0.0;
-double CalculationLayer::s_soilStressSummary = SOIL_INITIAL_STRESS;
-int CalculationLayer::s_index = 1;
+// Для работы с JSON используется библиотека nlohmann/json.
+// Скачайте файл json.hpp и поместите его в папку с проектом.
+#include "json.hpp"
 
+using json = nlohmann::json;
 
-CalculationLayer::CalculationLayer(const SoilLayer& _soilLayer, double _thickness, const CalculationLayer* _prevLayer)
-    : soil(_soilLayer),
-    index(s_index++),
-    thickness(_thickness),
-    middleElevation(0.0),
-    bottomElevation(0.0),
-    soilStress(0.0),
-    foundationPitStress(0.0),
-    structureStress(0.0),
-    alpha(0.0),
-    settlement1(0.0),
-    settlement2(0.0),
-    settlementTotal(0.0)
+// --- Структуры для хранения данных ---
+
+// Входные данные по слою грунта (из JSON)
+struct SoilLayerData
 {
-    CalculateElevations();
-    CalculateAlpha();
-    CalculateStresses(_prevLayer);
-    CalculateSettlement();
-}
+    double thickness_m;
+    double unitWeight_kN_m3;
+    double saturatedUnitWeight_kN_m3;
+    double deformationModulusFirst_kPa;
+    double deformationModulusSecond_kPa;
+};
 
-
-void CalculationLayer::CalculateSettlement()
+// Все входные параметры, загружаемые из JSON
+struct InputData
 {
-    settlement1 = BETTA * (structureStress - foundationPitStress) * thickness / soil.deformationModulusFirst;
-    settlement2 = BETTA * foundationPitStress * thickness / soil.deformationModulusSecond;
-    settlementTotal = FOUNDATION_DEPTH >= 5.0 ? settlement1 + settlement2 : settlement1; // Если глубина заложения ФП более 5 [м] то учитываем второе слагаемое.
-}
+    // Параметры фундамента
+    double load_kPa;
+    double width_m;
+    double length_m;
+    double foundationDepth_m;
+    double groundWaterDepth_m;
 
-void CalculationLayer::CalculateStresses(const CalculationLayer* _prevLayer)
+    // Параметры расчета
+    double betta_coefficient;
+    double backfillDensity_kN_m3;
+    double sublayerManualThickness_m;
+    std::string resultFilePath;
+
+    // Слои грунта
+    std::vector<SoilLayerData> soilLayers;
+};
+
+// Результаты расчета для одного элементарного слоя (для вывода в CSV)
+struct CalculationLayerResult
 {
-    double waterHeight = std::max((middleElevation + FOUNDATION_DEPTH - GROUND_WATER_DEPTH), -0.001);
-    soilStress = s_soilStressSummary + thickness / 2 * (waterHeight > 0.0 ? soil.saturatedWeight : soil.unitWeight); // Если слой ниже УГВ то учитываем это в расчете водонасыщенным весом грунта.
+    int index; // Порядковый номер слоя
+    const SoilLayerData& soil; // Ссылка на исходные свойства грунта
+    double thickness; // Толщина расчетного слоя [м]
+    double bottomElevation; // Отметка низа расчетного слоя относительно подошвы фундамента [м]
+    double soilStress;  // Среднее значение вертикального напряжения от собственного веса грунта [кПа]
+    double soilStressReductionFactor; // Коэффициент перехода напряжений. 0.2 для E < 7 [МПа], 0.5 при E >= 7 [МПа].
+    double soilStressReducted; // Среднее значение вертикльного напряжения от собственного веса грунта с учетом коэффициента 0.2 или 0.5 [кПа]
+    double foundationPitStress; // Среднее значение вертикального напряжения от собственного веса выбранного при отрывке котлована грунта [кПа]
+    double structureStress; // Среднее значение вертикального нормального напряжения от внешней нагрузки в грунте [кПа]
+    double alpha; // Коэффициент "a" считаем по формуле (не по таблице)
+    double settlement1; // Осадка слоя от левого слагаемого [м]
+    double settlement2; // Осадка слоя от правого слагаемого [м]
+    double settlementTotal; // Осадка суммарная [м]
+};
 
-    if (_prevLayer)
+// --- Основной класс для выполнения расчетов ---
+
+class SettlementCalculator
+{
+public:
+    explicit SettlementCalculator(InputData data) : m_input(std::move(data)) {}
+    void Run();
+
+private:
+    // Создание и расчет одного элементарного слоя
+    CalculationLayerResult CreateCalculationLayer(
+        const SoilLayerData& soil,
+        double thickness,
+        double currentDepthSummary,
+        double currentSoilStressSummary,
+        const CalculationLayerResult* prevLayer);    
+
+    // Формула А. Лява для коэффициента alpha
+    double CalculateAlpha(double middleElevation) const;
+
+    // Вывод итогов в консоль
+    void PrintConsoleSummary(double totalSettlement, double compressibleDepth) const;
+
+    // Запись подробного отчета в CSV
+    void WriteCsvReport(const std::vector<CalculationLayerResult>& results, double totalSettlement, double compressibleDepth) const;
+    
+    // Определение толщины расчетного подслоя hi
+    inline double GetSublayerThickness() const
     {
-        waterHeight = std::max((_prevLayer->middleElevation + FOUNDATION_DEPTH - GROUND_WATER_DEPTH), -0.001);
-        soilStress += _prevLayer->thickness / 2 * (waterHeight > 0.0 ? _prevLayer->soil.saturatedWeight : _prevLayer->soil.unitWeight);
+        return std::min(m_input.sublayerManualThickness_m, 0.2 * m_input.width_m);
     }
 
-    s_soilStressSummary = soilStress;
-    soilStressReductionFactor = soil.deformationModulusFirst >= 7000 ? 0.5 : 0.2;
-    soilStressReducted = soilStress * soilStressReductionFactor;
-    foundationPitStress = SOIL_INITIAL_STRESS * alpha;
+private:
+    InputData m_input;
+};
 
-    structureStress = (Q - GROUND_WATER_PLATE_PRESSURE) * alpha;
+// Загрузка параметров из JSON файла
+InputData LoadInputFromJSON(const std::string& filename)
+{
+    std::ifstream file(filename);
 
-    if (soilStress < 0)
+    if (!file.is_open())
     {
-        std::cerr << "Ошибка схождения данных. Отрицательные напряжения в расчетном слое грунта.\n";
-        std::cout << *this;
-        std::terminate();
+        throw std::runtime_error("Не удалось открыть файл с входными данными: " + filename);
     }
+
+    json data = json::parse(file);
+
+    InputData input;
+    input.load_kPa = data["foundation"]["load_kPa"];
+    input.width_m = data["foundation"]["width_m"];
+    input.length_m = data["foundation"]["length_m"];
+    input.foundationDepth_m = data["foundation"]["foundation_depth_m"];
+    input.groundWaterDepth_m = data["foundation"]["ground_water_depth_m"];
+
+    input.betta_coefficient = data["calculation_params"]["betta_coefficient"];
+    input.backfillDensity_kN_m3 = data["calculation_params"]["backfill_density_kN_m3"];
+    input.sublayerManualThickness_m = data["calculation_params"]["sublayer_manual_thickness_m"];
+    input.resultFilePath = data["calculation_params"]["result_file_path"];
+
+    for (const auto& layer_json : data["soil_layers"])
+    {        
+        double e2 = layer_json.contains("E2_kPa") ? layer_json["E2_kPa"].get<double>() : 0.0;
+       
+        if (e2 == 0.0)
+        {
+            e2 = layer_json["E1_kPa"].get<double>() * 5.0; // По СП 22.13330 если нет данных то E2 = 5*E1
+        
+        }
+
+        input.soilLayers.push_back({
+            layer_json["thickness_m"],
+            layer_json["unit_weight_kN_m3"],
+            layer_json["saturated_unit_weight_kN_m3"],
+            layer_json["E1_kPa"],
+            e2
+            });
+    }
+    return input;
 }
 
-void CalculationLayer::CalculateElevations()
+std::string GetInputFilePath()
 {
-    middleElevation = s_depthSummary + thickness / 2.0;
-    bottomElevation = s_depthSummary + thickness;
-    s_depthSummary += thickness;
-}
+    std::string path;
+    std::cout << "Введите путь к файлу данных и нажмите Enter." << std::endl;
+    std::cout << "(Если файл (input.json) в той же папке, что и программа, просто нажмите Enter): ";
+    std::getline(std::cin, path);
 
-// Формула А. Лява для величины сжимающих напряжений. Альтернативный вариант - интерполяция таблицы из СП 22.13330.
-void CalculationLayer::CalculateAlpha()
-{
-    double D = sqrt(L_HALF * L_HALF + B_HALF * B_HALF + middleElevation * middleElevation);
-    double s1 = (L_HALF * B_HALF * middleElevation / D) * (L_HALF * L_HALF + B_HALF * B_HALF + 2 * middleElevation * middleElevation) / (D * D * middleElevation * middleElevation + L_HALF * L_HALF * B_HALF * B_HALF);
-    double s2 = asin((L_HALF * B_HALF) / (sqrt(L_HALF * L_HALF + middleElevation * middleElevation) * sqrt(B_HALF * B_HALF + middleElevation * middleElevation)));
-    alpha = (2 / PI) * (s1 + s2);
-}
-
-std::ostream& operator<<(std::ostream& s, const CalculationLayer& layer)
-{
-    //s << "Layer index: " << layer.index << std::endl;
-    //s << "Layer thickness: " << layer.thickness << " m." << std::endl;
-    //s << "Layer bottom elevation: " << layer.bottomElevation << " m." << std::endl;
-    //s << "Layer soil stress: " << layer.soilStress << " kPa." << std::endl;
-    //s << "Layer soil stress reduction factor: " << layer.soilStressReductionFactor << std::endl;
-    //s << "Layer soil stress reducted: " << layer.soilStressReducted << " kPa." << std::endl;
-    //s << "Layer foundation pit stress: " << layer.foundationPitStress << " kPa." << std::endl;
-    //s << "Layer sctructure stress: " << layer.structureStress << " kPa." << std::endl;
-    //s << "Layer alpha factor: " << layer.alpha << " kPa." << std::endl;
-    //s << "Layer settlement 1: " << layer.settlement1 << " m." << std::endl;
-    //s << "Layer settlement 2: " << layer.settlement2 << " m." << std::endl;
-    //s << "Layer settlement summary: " << layer.settlementTotal << " m." << std::endl;
-    //s << "---------------------------------------------" << std::endl;
-
-    s << layer.index << ";" << layer.thickness << ";" << layer.bottomElevation << ";" << layer.soilStress << ";" << layer.soilStressReductionFactor << ";"
-        << layer.soilStressReducted << ";" << layer.alpha << ";" << layer.foundationPitStress << ";" << layer.structureStress << ";"
-        << layer.settlement1 << ";" << layer.settlement2 << ";" << layer.settlementTotal << ";" << std::endl;
-    return s;
-}
-
-
-
-void ProcessSoilLayersCalculation(const std::vector<SoilLayer>& soilLayers, std::vector<CalculationLayer>& calculationLayers)
-{
-    for (const auto& soil : soilLayers)
+    // Если пользователь ничего не ввел, используем имя файла по умолчанию
+    if (path.empty())
     {
-        double remainingThickness = soil.thickness;
+        return "input.json";
+    }
+
+    // Простая проверка, чтобы убрать случайные кавычки, если пользователь скопировал путь
+    if (path.front() == '"' && path.back() == '"')
+    {
+        path = path.substr(1, path.length() - 2);
+    }
+
+    return path;
+}
+
+void SettlementCalculator::Run()
+{
+    // --- Инициализация состояния расчета ---
+    std::vector<CalculationLayerResult> calculationResults;
+    double depthSummary = 0.0;
+    double soilStressSummary = m_input.backfillDensity_kN_m3 * m_input.foundationDepth_m;
+    double totalSettlement = 0.0;
+    double compressibleDepth = 0.0;
+
+    // --- Основной цикл расчета по слоям ---
+    for (const auto& soil : m_input.soilLayers)
+    {
+        double remainingThickness = soil.thickness_m;
+        bool stopConditionMet = false;
 
         while (remainingThickness > 0)
         {
-            if (calculationLayers.size() != 0 && calculationLayers.back().soilStressReducted >= calculationLayers.back().structureStress)
-                break;
+            // Проверка условия остановки (нижняя граница сжимаемой толщи)
+            if (!calculationResults.empty())
+            {
+                const auto& lastLayer = calculationResults.back();
+                if (lastLayer.soilStressReducted >= lastLayer.structureStress)
+                {
+                    compressibleDepth = depthSummary;
+                    stopConditionMet = true;
+                    break;
+                }
+            }
 
-            double thickness = std::min(SUB_LAYER_THICKNESS, remainingThickness);
-            CalculationLayer* previousLayer = calculationLayers.size() < 1 ? nullptr : &calculationLayers[calculationLayers.size() - 1];
-            calculationLayers.push_back(CalculationLayer(soil, thickness, previousLayer));
+            const double sublayerThickness = GetSublayerThickness();
+            const double thickness = std::min(sublayerThickness, remainingThickness);
+
+            // Создаем и заполняем расчетный слой
+            CalculationLayerResult currentLayer = CreateCalculationLayer(
+                soil,
+                thickness,
+                depthSummary,
+                soilStressSummary,
+                calculationResults.empty() ? nullptr : &calculationResults.back()
+            );
+
+            // Обновляем состояние для следующего шага
+            depthSummary += thickness;
+            soilStressSummary = currentLayer.soilStress;
+            totalSettlement += currentLayer.settlementTotal;
+
+            calculationResults.push_back(currentLayer);
             remainingThickness -= thickness;
         }
+        if (stopConditionMet)
+        {
+            break;
+        }
+    }
+
+    // Если условие не сработало, сжимаемая толща равна всей пройденной глубине
+    if (compressibleDepth == 0.0)
+    {
+        compressibleDepth = depthSummary;
+    }
+
+    // --- Вывод результатов ---
+    PrintConsoleSummary(totalSettlement, compressibleDepth);
+    WriteCsvReport(calculationResults, totalSettlement, compressibleDepth);
+
+    // --- Дать пользователю возможность увидеть результаты ---
+    std::cout << "Нажмите Enter для выхода...";
+    std::cin.get();
+}
+
+CalculationLayerResult SettlementCalculator::CreateCalculationLayer(
+    const SoilLayerData& soil,
+    double thickness,
+    double currentDepthSummary,
+    double currentSoilStressSummary,
+    const CalculationLayerResult* prevLayer)
+{
+    CalculationLayerResult layer{
+        .index = static_cast<int>(prevLayer ? prevLayer->index + 1 : 1),
+        .soil = soil,
+        .thickness = thickness
+    };
+
+    // --- Расчет отметок
+    layer.bottomElevation = currentDepthSummary + thickness;
+    double middleElevation = currentDepthSummary + thickness / 2.0;
+
+    // --- Расчет коэффициента alpha--
+    layer.alpha = CalculateAlpha(middleElevation);
+
+    // --- Расчет напряжений
+    double waterHeight = std::max((middleElevation + m_input.foundationDepth_m - m_input.groundWaterDepth_m), 0.0);
+    double saturatedWeight = soil.unitWeight_kN_m3 - 10.0;
+
+    layer.soilStress = currentSoilStressSummary + thickness / 2.0 * (waterHeight > 0.0 ? saturatedWeight : soil.unitWeight_kN_m3);
+
+    if (prevLayer)
+    {
+        double prevMiddleElevation = prevLayer->bottomElevation - prevLayer->thickness / 2.0;
+        double prevWaterHeight = std::max((prevMiddleElevation + m_input.foundationDepth_m - m_input.groundWaterDepth_m), 0.0);
+        double prevSaturatedWeight = prevLayer->soil.unitWeight_kN_m3 - 10.0;
+        layer.soilStress += prevLayer->thickness / 2.0 * (prevWaterHeight > 0.0 ? prevSaturatedWeight : prevLayer->soil.unitWeight_kN_m3);
+    }
+
+    layer.soilStressReductionFactor = soil.deformationModulusFirst_kPa >= 7000 ? 0.5 : 0.2;
+    layer.soilStressReducted = layer.soilStress * layer.soilStressReductionFactor;
+
+    double initialStress = m_input.backfillDensity_kN_m3 * m_input.foundationDepth_m;
+    layer.foundationPitStress = initialStress * layer.alpha;
+
+    double waterPressure = std::max((m_input.foundationDepth_m - m_input.groundWaterDepth_m) * 10.0, 0.0);
+    layer.structureStress = (m_input.load_kPa - waterPressure) * layer.alpha;
+
+    // --- Расчет осадки
+    layer.settlement1 = m_input.betta_coefficient * (layer.structureStress - layer.foundationPitStress) * thickness / soil.deformationModulusFirst_kPa;
+    layer.settlement2 = m_input.betta_coefficient * layer.foundationPitStress * thickness / soil.deformationModulusSecond_kPa;
+    layer.settlementTotal = m_input.foundationDepth_m >= 5.0 ? layer.settlement1 + layer.settlement2 : layer.settlement1;
+
+    return layer;
+}
+
+double SettlementCalculator::CalculateAlpha(double middleElevation) const
+{
+    constexpr double PI = 3.14159265;
+    double l_half = m_input.length_m / 2.0;
+    double b_half = m_input.width_m / 2.0;
+    double D = sqrt(l_half * l_half + b_half * b_half + middleElevation * middleElevation);
+    if (D == 0.0) return 1.0;
+
+    double denominator = (D * D * middleElevation * middleElevation + l_half * l_half * b_half * b_half);
+    if (denominator == 0.0) return 1.0;
+
+    double s1 = (l_half * b_half * middleElevation / D) * (l_half * l_half + b_half * b_half + 2 * middleElevation * middleElevation) / denominator;
+    double s2_arg_den = (sqrt(l_half * l_half + middleElevation * middleElevation) * sqrt(b_half * b_half + middleElevation * middleElevation));
+    if (s2_arg_den == 0.0) return (2 / PI) * s1;
+
+    double s2_arg = (l_half * b_half) / s2_arg_den;
+    s2_arg = std::clamp(s2_arg, -1.0, 1.0);
+
+    double s2 = asin(s2_arg);
+    return (2 / PI) * (s1 + s2);
+}
+
+void SettlementCalculator::PrintConsoleSummary(double totalSettlement, double compressibleDepth) const
+{
+    std::cout << "\n--- РЕЗУЛЬТАТЫ РАСЧЕТА ---" << std::endl;
+    std::cout << std::fixed;
+    std::cout << "Осадка: " << std::setprecision(2) << totalSettlement * 1000 << " мм." << std::endl;
+    std::cout << "Глубина сжимаемой толщи: " << std::setprecision(2) << compressibleDepth << " м." << std::endl;
+    std::cout << "-----------------------------------------" << std::endl;
+    std::cout << "Подробный отчет сохранен в файл: " << m_input.resultFilePath << std::endl;
+}
+
+void SettlementCalculator::WriteCsvReport(const std::vector<CalculationLayerResult>& results, double totalSettlement, double compressibleDepth) const
+{
+    std::ofstream file(m_input.resultFilePath);
+    if (!file.is_open())
+    {
+        std::cerr << "Ошибка: не удалось создать файл для записи результатов: " << m_input.resultFilePath << std::endl;
+        return;
+    }
+
+    file << std::fixed << std::setprecision(4);
+
+    file << "ИТОГОВЫЕ РЕЗУЛЬТАТЫ\n";
+    file << "Осадка, мм;" << totalSettlement * 1000 << "\n";
+    file << "Глубина сжимаемой толщи, м;" << compressibleDepth << "\n\n";
+
+    file << "ИСХОДНЫЕ ДАННЫЕ\n";
+    file << "Параметр;Значение;Ед. изм.\n";
+    file << "q;" << m_input.load_kPa << ";кПа\n";
+    file << "B;" << m_input.width_m << ";м\n";
+    file << "L;" << m_input.length_m << ";м\n";
+    file << "d;" << m_input.foundationDepth_m << ";м\n";
+    file << "УГВ;" << m_input.groundWaterDepth_m << ";м\n\n";
+
+    file << "ДЕТАЛЬНЫЙ РАСЧЕТ ПО СЛОЯМ\n";
+    file << "Index;h_i, м;z_bot, м;sigma_zg, кПа;k;sigma_zg_red, кПа;alpha;sigma_zy, кПа;sigma_zp, кПа;s1, м;s2, м;s_tot, м\n";
+
+    for (const auto& layer : results)
+    {
+        file << layer.index << ";" << layer.thickness << ";" << layer.bottomElevation << ";" << layer.soilStress << ";"
+            << layer.soilStressReductionFactor << ";" << layer.soilStressReducted << ";" << layer.alpha << ";"
+            << layer.foundationPitStress << ";" << layer.structureStress << ";" << layer.settlement1 << ";"
+            << layer.settlement2 << ";" << layer.settlementTotal << "\n";
     }
 }
 
-double GetTotalSettlement(const std::vector<CalculationLayer>& layers)
+int main()
 {
-    double settlement = 0.0;
+    setlocale(LC_ALL, "Russian");
+    try
+    {
+        std::string config_path = GetInputFilePath();
+        InputData input = LoadInputFromJSON(config_path);
+        SettlementCalculator calculator(input);
+        calculator.Run();
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "\nКритическая ошибка: " << e.what() << std::endl;
+        std::cout << "Нажмите Enter для выхода...";
+        std::cin.get();
+        return 1;
+    }
 
-    for (const auto& layer : layers)
-        settlement += layer.settlementTotal;
-
-    return settlement;
+    return 0;
 }
