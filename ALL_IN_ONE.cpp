@@ -151,7 +151,7 @@ void SettlementCalculator::Run()
     WriteCsvReport(calculationResults, totalSettlement, compressibleDepth);
     WriteHtmlReport(calculationResults, compressibleDepth);
 
-    std::cout << u8"\nРабота программы успешно завершена. Нажмите Enter для выхода...";
+    std::cout << reinterpret_cast<const char*>(u8"\nРабота программы успешно завершена. Нажмите Enter для выхода...");
     std::cin.get();
 }
 
@@ -226,13 +226,13 @@ double SettlementCalculator::CalculateAlpha(double middleElevation) const
 
 void SettlementCalculator::PrintConsoleSummary(double totalSettlement, double compressibleDepth) const
 {
-    std::cout << u8"\n--- РЕЗУЛЬТАТЫ РАСЧЕТА ---" << std::endl;
+    std::cout << reinterpret_cast<const char*>(u8"\n--- РЕЗУЛЬТАТЫ РАСЧЕТА ---") << std::endl;
     std::cout << std::fixed;
-    std::cout << u8"Итоговая осадка: " << std::setprecision(2) << totalSettlement * 1000 << u8" мм." << std::endl;
-    std::cout << u8"Глубина сжимаемой толщи: " << std::setprecision(2) << compressibleDepth << u8" м." << std::endl;
+    std::cout << reinterpret_cast<const char*>(u8"Итоговая осадка: ") << std::setprecision(2) << totalSettlement * 1000 << reinterpret_cast<const char*>(u8" мм.") << std::endl;
+    std::cout << reinterpret_cast<const char*>(u8"Глубина сжимаемой толщи: ") << std::setprecision(2) << compressibleDepth << reinterpret_cast<const char*>(u8" м.") << std::endl;
     std::cout << "-----------------------------------------" << std::endl;
-    std::cout << u8"Подробный CSV отчет сохранен в файл: " << m_input.resultFilePath << std::endl;
-    std::cout << u8"Интерактивный HTML отчет сохранен в файл: calculation_report.html" << std::endl;
+    std::cout << reinterpret_cast<const char*>(u8"Подробный CSV отчет сохранен в файл: ") << m_input.resultFilePath << std::endl;
+    std::cout << reinterpret_cast<const char*>(u8"Интерактивный HTML отчет сохранен в файл: calculation_report.html") << std::endl;
 }
 
 void SettlementCalculator::WriteCsvReport(const std::vector<CalculationLayerResult>& results, double totalSettlement, double compressibleDepth) const
@@ -240,19 +240,18 @@ void SettlementCalculator::WriteCsvReport(const std::vector<CalculationLayerResu
     std::ofstream file(m_input.resultFilePath);
     if (!file.is_open())
     {
-        std::cerr << u8"Ошибка: не удалось создать CSV файл для записи результатов." << std::endl;
+        std::cerr << reinterpret_cast<const char*>(u8"Ошибка: не удалось создать CSV файл для записи результатов.") << std::endl;
         return;
     }
     
-    // Пишем BOM для UTF-8, чтобы Excel корректно распознал кириллицу
     file << (char)0xEF << (char)0xBB << (char)0xBF;
 
     file << std::fixed << std::setprecision(4);
-    file << u8"ИТОГОВЫЕ РЕЗУЛЬТАТЫ\n";
-    file << u8"Осадка, мм;" << totalSettlement * 1000 << "\n";
-    file << u8"Глубина сжимаемой толщи, м;" << compressibleDepth << "\n\n";
-    file << u8"ДЕТАЛЬНЫЙ РАСЧЕТ ПО СЛОЯМ\n";
-    file << u8"Index;h_i, м;z_bot, м;sigma_zg, кПа;k;sigma_zg_red, кПа;alpha;sigma_zy, кПа;sigma_zp, кПа;s1, м;s2, м;s_tot, м\n";
+    file << reinterpret_cast<const char*>(u8"ИТОГОВЫЕ РЕЗУЛЬТАТЫ\n");
+    file << reinterpret_cast<const char*>(u8"Осадка, мм;") << totalSettlement * 1000 << "\n";
+    file << reinterpret_cast<const char*>(u8"Глубина сжимаемой толщи, м;") << compressibleDepth << "\n\n";
+    file << reinterpret_cast<const char*>(u8"ДЕТАЛЬНЫЙ РАСЧЕТ ПО СЛОЯМ\n");
+    file << reinterpret_cast<const char*>(u8"Index;h_i, м;z_bot, м;sigma_zg, кПа;k;sigma_zg_red, кПа;alpha;sigma_zy, кПа;sigma_zp, кПа;s1, м;s2, м;s_tot, м\n");
     for (const auto& layer : results)
     {
         file << layer.index << ";" << layer.thickness << ";" << layer.bottomElevation << ";" << layer.soilStress << ";"
@@ -267,15 +266,14 @@ void SettlementCalculator::WriteHtmlReport(const std::vector<CalculationLayerRes
     std::ofstream file("calculation_report.html");
     if (!file.is_open())
     {
-        std::cerr << u8"Ошибка: не удалось создать HTML-отчет." << std::endl;
+        std::cerr << reinterpret_cast<const char*>(u8"Ошибка: не удалось создать HTML-отчет.") << std::endl;
         return;
     }
 
-    // --- ИСПРАВЛЕНИЕ: Пишем UTF-8 BOM в начало файла ---
     file << (char)0xEF << (char)0xBB << (char)0xBF;
 
-    // Используем u8"" для всех строк с кириллицей
-    file << u8R"(<!DOCTYPE html>
+    // ИСПРАВЛЕНИЕ: Добавлено reinterpret_cast<const char*> для u8R
+    file << reinterpret_cast<const char*>(u8R"(<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -306,7 +304,7 @@ void SettlementCalculator::WriteHtmlReport(const std::vector<CalculationLayerRes
         </div>
     </div>
     <script>
-)";
+)");
     file << std::fixed << std::setprecision(4);
 
     double p0 = m_input.load_kPa - (m_input.backfillDensity_kN_m3 * m_input.foundationDepth_m);
@@ -332,7 +330,8 @@ void SettlementCalculator::WriteHtmlReport(const std::vector<CalculationLayerRes
     
     file << "const compressibleDepth = " << compressibleDepth << ";\n";
 
-    file << u8R"(
+    // ИСПРАВЛЕНИЕ: Добавлено reinterpret_cast<const char*> для u8R
+    file << reinterpret_cast<const char*>(u8R"(
         Chart.register(ChartAnnotation);
         const stressCtx = document.getElementById('stressChart').getContext('2d');
         new Chart(stressCtx, {
@@ -406,7 +405,7 @@ void SettlementCalculator::WriteHtmlReport(const std::vector<CalculationLayerRes
 </div>
 </body>
 </html>
-)";
+)");
 }
 
 // --- Глобальные функции и main ---
@@ -451,8 +450,9 @@ InputData LoadInputFromJSON(const std::string& filename)
 std::string GetInputFilePath()
 {
     std::string path;
-    std::cout << u8"Введите путь к файлу данных и нажмите Enter." << std::endl;
-    std::cout << u8"(Если файл (input.json) в той же папке, что и программа, просто нажмите Enter): ";
+    // ИСПРАВЛЕНИЕ: Добавлено reinterpret_cast
+    std::cout << reinterpret_cast<const char*>(u8"Введите путь к файлу данных и нажмите Enter.") << std::endl;
+    std::cout << reinterpret_cast<const char*>(u8"(Если файл (input.json) в той же папке, что и программа, просто нажмите Enter): ");
     std::getline(std::cin, path);
 
     if (path.empty())
@@ -469,7 +469,6 @@ std::string GetInputFilePath()
 
 int main()
 {
-    // setlocale больше не нужен для корректной записи файла, но полезен для вывода в консоль
     setlocale(LC_ALL, "Russian");
     try
     {
@@ -481,7 +480,7 @@ int main()
     catch (const std::exception& e)
     {
         std::cerr << "\nКритическая ошибка: " << e.what() << std::endl;
-        std::cout << u8"Нажмите Enter для выхода...";
+        std::cout << reinterpret_cast<const char*>(u8"Нажмите Enter для выхода...");
         std::cin.get();
         return 1;
     }
