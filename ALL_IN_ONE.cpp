@@ -76,12 +76,11 @@ private:
     double CalculateAlpha(double middleElevation) const;
     void PrintConsoleSummary(double totalSettlement, double compressibleDepth) const;
     void WriteCsvReport(const std::vector<CalculationLayerResult>& results, double totalSettlement, double compressibleDepth) const;
-    // Новая функция для генерации HTML отчета
     void WriteHtmlReport(const std::vector<CalculationLayerResult>& results, double compressibleDepth) const;
 
     inline double GetSublayerThickness() const
     {
-        return std::min(m_input.sublayerManualThickness_m, 0.4 * m_input.width_m); // СП 22.13330.2016 п.5.6.24: hi <= 0.4*b
+        return std::min(m_input.sublayerManualThickness_m, 0.4 * m_input.width_m);
     }
 
 private:
@@ -108,9 +107,6 @@ void SettlementCalculator::Run()
             if (!calculationResults.empty())
             {
                 const auto& lastLayer = calculationResults.back();
-                // Условие остановки по СП 22.13330.2016, п. 5.6.40
-                // σ_zp <= 0.5 * σ_zg  (для E >= 7 МПа)
-                // σ_zp <= 0.2 * σ_zg  (для E < 7 МПа)
                 if (lastLayer.structureStress <= lastLayer.soilStressReducted)
                 {
                     compressibleDepth = depthSummary;
@@ -130,8 +126,8 @@ void SettlementCalculator::Run()
                 calculationResults.empty() ? nullptr : &calculationResults.back());
 
             depthSummary += thickness;
-            // Напряжение на подошве текущего слоя для передачи следующему
-            double waterHeight = std::max((currentLayer.bottomElevation + m_input.foundationDepth_m - m_input.groundWaterDepth_m), 0.0);
+            double middleOfLayer = currentLayer.bottomElevation - currentLayer.thickness / 2.0;
+            double waterHeight = std::max((middleOfLayer + m_input.foundationDepth_m - m_input.groundWaterDepth_m), 0.0);
             double currentUnitWeight = (waterHeight > 0.0) ? soil.saturatedUnitWeight_kN_m3 : soil.unitWeight_kN_m3;
             soilStressSummary += (currentUnitWeight - (waterHeight > 0 ? 10.0 : 0.0)) * thickness;
             
@@ -153,9 +149,9 @@ void SettlementCalculator::Run()
 
     PrintConsoleSummary(totalSettlement, compressibleDepth);
     WriteCsvReport(calculationResults, totalSettlement, compressibleDepth);
-    WriteHtmlReport(calculationResults, compressibleDepth); // <-- ВЫЗОВ НОВОЙ ФУНКЦИИ
+    WriteHtmlReport(calculationResults, compressibleDepth);
 
-    std::cout << "\nРабота программы успешно завершена. Нажмите Enter для выхода...";
+    std::cout << u8"\nРабота программы успешно завершена. Нажмите Enter для выхода...";
     std::cin.get();
 }
 
@@ -176,7 +172,6 @@ CalculationLayerResult SettlementCalculator::CreateCalculationLayer(
 
     layer.alpha = CalculateAlpha(middleElevation);
 
-    // Напряжения
     double waterHeight = std::max((middleElevation + m_input.foundationDepth_m - m_input.groundWaterDepth_m), 0.0);
     double currentUnitWeight = (waterHeight > 0.0) ? soil.saturatedUnitWeight_kN_m3 : soil.unitWeight_kN_m3;
     layer.soilStress = currentSoilStressSummary + (currentUnitWeight - (waterHeight > 0 ? 10.0 : 0.0)) * thickness / 2.0;
@@ -187,11 +182,9 @@ CalculationLayerResult SettlementCalculator::CreateCalculationLayer(
     double initialStress = m_input.backfillDensity_kN_m3 * m_input.foundationDepth_m;
     layer.foundationPitStress = initialStress * layer.alpha;
 
-    // Дополнительное вертикальное напряжение от внешней нагрузки p0
     double p0 = m_input.load_kPa - initialStress;
     layer.structureStress = p0 * layer.alpha;
 
-    // Осадка
     layer.settlement1 = m_input.betta_coefficient * (layer.structureStress - layer.foundationPitStress) * thickness / soil.deformationModulusFirst_kPa;
     layer.settlement2 = m_input.betta_coefficient * layer.foundationPitStress * thickness / soil.deformationModulusSecond_kPa;
     layer.settlementTotal = m_input.foundationDepth_m >= 5.0 ? layer.settlement1 + layer.settlement2 : layer.settlement1;
@@ -201,7 +194,6 @@ CalculationLayerResult SettlementCalculator::CreateCalculationLayer(
 
 double SettlementCalculator::CalculateAlpha(double middleElevation) const
 {
-    // Защита от деления на ноль на подошве фундамента
     if (middleElevation < 1e-6) middleElevation = 1e-6;
 
     constexpr double PI = 3.141592653589793;
@@ -212,10 +204,20 @@ double SettlementCalculator::CalculateAlpha(double middleElevation) const
     double m = l_half / b_half;
     double n = z / b_half;
 
-    double term1 = m * n / (sqrt(1 + m*m + n*n)) * ( (1/(m*m+n*n)) + (1/(1+n*n)) );
-    double term2_arg = m / (sqrt(n*n+1) * sqrt(m*m+n*n));
+    double term1_num = m * n;
+    double term1_den = sqrt(1 + m*m + n*n);
+    double term1_mult_num = 1;
+    double term1_mult_den1 = m*m + n*n;
+    double term1_mult_den2 = 1 + n*n;
+
+    if (term1_den == 0 || term1_mult_den1 == 0 || term1_mult_den2 == 0) return 0;
+
+    double term1 = (term1_num / term1_den) * ( (term1_mult_num/term1_mult_den1) + (term1_mult_num/term1_mult_den2) );
     
-    // std::clamp требует C++17
+    double term2_arg_den = sqrt(n*n+1) * sqrt(m*m+n*n);
+    if (term2_arg_den == 0) return 0;
+    double term2_arg = m / term2_arg_den;
+    
     term2_arg = std::clamp(term2_arg, -1.0, 1.0);
     double term2 = atan(term2_arg);
 
@@ -224,13 +226,13 @@ double SettlementCalculator::CalculateAlpha(double middleElevation) const
 
 void SettlementCalculator::PrintConsoleSummary(double totalSettlement, double compressibleDepth) const
 {
-    std::cout << "\n--- РЕЗУЛЬТАТЫ РАСЧЕТА ---" << std::endl;
+    std::cout << u8"\n--- РЕЗУЛЬТАТЫ РАСЧЕТА ---" << std::endl;
     std::cout << std::fixed;
-    std::cout << "Итоговая осадка: " << std::setprecision(2) << totalSettlement * 1000 << " мм." << std::endl;
-    std::cout << "Глубина сжимаемой толщи: " << std::setprecision(2) << compressibleDepth << " м." << std::endl;
+    std::cout << u8"Итоговая осадка: " << std::setprecision(2) << totalSettlement * 1000 << u8" мм." << std::endl;
+    std::cout << u8"Глубина сжимаемой толщи: " << std::setprecision(2) << compressibleDepth << u8" м." << std::endl;
     std::cout << "-----------------------------------------" << std::endl;
-    std::cout << "Подробный CSV отчет сохранен в файл: " << m_input.resultFilePath << std::endl;
-    std::cout << "Интерактивный HTML отчет сохранен в файл: calculation_report.html" << std::endl;
+    std::cout << u8"Подробный CSV отчет сохранен в файл: " << m_input.resultFilePath << std::endl;
+    std::cout << u8"Интерактивный HTML отчет сохранен в файл: calculation_report.html" << std::endl;
 }
 
 void SettlementCalculator::WriteCsvReport(const std::vector<CalculationLayerResult>& results, double totalSettlement, double compressibleDepth) const
@@ -238,16 +240,19 @@ void SettlementCalculator::WriteCsvReport(const std::vector<CalculationLayerResu
     std::ofstream file(m_input.resultFilePath);
     if (!file.is_open())
     {
-        std::cerr << "Ошибка: не удалось создать CSV файл для записи результатов." << std::endl;
+        std::cerr << u8"Ошибка: не удалось создать CSV файл для записи результатов." << std::endl;
         return;
     }
+    
+    // Пишем BOM для UTF-8, чтобы Excel корректно распознал кириллицу
+    file << (char)0xEF << (char)0xBB << (char)0xBF;
 
     file << std::fixed << std::setprecision(4);
-    file << "ИТОГОВЫЕ РЕЗУЛЬТАТЫ\n";
-    file << "Осадка, мм;" << totalSettlement * 1000 << "\n";
-    file << "Глубина сжимаемой толщи, м;" << compressibleDepth << "\n\n";
-    file << "ДЕТАЛЬНЫЙ РАСЧЕТ ПО СЛОЯМ\n";
-    file << "Index;h_i, м;z_bot, м;sigma_zg, кПа;k;sigma_zg_red, кПа;alpha;sigma_zy, кПа;sigma_zp, кПа;s1, м;s2, м;s_tot, м\n";
+    file << u8"ИТОГОВЫЕ РЕЗУЛЬТАТЫ\n";
+    file << u8"Осадка, мм;" << totalSettlement * 1000 << "\n";
+    file << u8"Глубина сжимаемой толщи, м;" << compressibleDepth << "\n\n";
+    file << u8"ДЕТАЛЬНЫЙ РАСЧЕТ ПО СЛОЯМ\n";
+    file << u8"Index;h_i, м;z_bot, м;sigma_zg, кПа;k;sigma_zg_red, кПа;alpha;sigma_zy, кПа;sigma_zp, кПа;s1, м;s2, м;s_tot, м\n";
     for (const auto& layer : results)
     {
         file << layer.index << ";" << layer.thickness << ";" << layer.bottomElevation << ";" << layer.soilStress << ";"
@@ -262,11 +267,15 @@ void SettlementCalculator::WriteHtmlReport(const std::vector<CalculationLayerRes
     std::ofstream file("calculation_report.html");
     if (!file.is_open())
     {
-        std::cerr << "Ошибка: не удалось создать HTML-отчет." << std::endl;
+        std::cerr << u8"Ошибка: не удалось создать HTML-отчет." << std::endl;
         return;
     }
 
-    file << R"(<!DOCTYPE html>
+    // --- ИСПРАВЛЕНИЕ: Пишем UTF-8 BOM в начало файла ---
+    file << (char)0xEF << (char)0xBB << (char)0xBF;
+
+    // Используем u8"" для всех строк с кириллицей
+    file << u8R"(<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -300,7 +309,6 @@ void SettlementCalculator::WriteHtmlReport(const std::vector<CalculationLayerRes
 )";
     file << std::fixed << std::setprecision(4);
 
-    // --- Генерация данных для JavaScript ---
     double p0 = m_input.load_kPa - (m_input.backfillDensity_kN_m3 * m_input.foundationDepth_m);
     double initial_sigma_zp = p0 * CalculateAlpha(0.001);
     double initial_sigma_zg = m_input.backfillDensity_kN_m3 * m_input.foundationDepth_m;
@@ -324,7 +332,7 @@ void SettlementCalculator::WriteHtmlReport(const std::vector<CalculationLayerRes
     
     file << "const compressibleDepth = " << compressibleDepth << ";\n";
 
-    file << R"(
+    file << u8R"(
         Chart.register(ChartAnnotation);
         const stressCtx = document.getElementById('stressChart').getContext('2d');
         new Chart(stressCtx, {
@@ -428,7 +436,7 @@ InputData LoadInputFromJSON(const std::string& filename)
         double e2 = layer_json.contains("E2_kPa") ? layer_json["E2_kPa"].get<double>() : 0.0;
         if (e2 == 0.0)
         {
-            e2 = layer_json["E1_kPa"].get<double>() * 5.0; // По СП 22.13330 если нет данных то E2 = 5*E1
+            e2 = layer_json["E1_kPa"].get<double>() * 5.0;
         }
         input.soilLayers.push_back({
             layer_json["thickness_m"],
@@ -443,8 +451,8 @@ InputData LoadInputFromJSON(const std::string& filename)
 std::string GetInputFilePath()
 {
     std::string path;
-    std::cout << "Введите путь к файлу данных и нажмите Enter." << std::endl;
-    std::cout << "(Если файл (input.json) в той же папке, что и программа, просто нажмите Enter): ";
+    std::cout << u8"Введите путь к файлу данных и нажмите Enter." << std::endl;
+    std::cout << u8"(Если файл (input.json) в той же папке, что и программа, просто нажмите Enter): ";
     std::getline(std::cin, path);
 
     if (path.empty())
@@ -461,6 +469,7 @@ std::string GetInputFilePath()
 
 int main()
 {
+    // setlocale больше не нужен для корректной записи файла, но полезен для вывода в консоль
     setlocale(LC_ALL, "Russian");
     try
     {
@@ -472,7 +481,7 @@ int main()
     catch (const std::exception& e)
     {
         std::cerr << "\nКритическая ошибка: " << e.what() << std::endl;
-        std::cout << "Нажмите Enter для выхода...";
+        std::cout << u8"Нажмите Enter для выхода...";
         std::cin.get();
         return 1;
     }
